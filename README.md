@@ -231,27 +231,55 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+Dans notre architecture actuelle, la perte des composants suivants est critique :
+
+Le PVC pra-backup : C'est notre unique filet de sécurité. Si ce volume est supprimé ou corrompu, nous perdons tout l'historique des sauvegardes.
+
+Le Cluster K3d (en entier) : Puisque nous utilisons du stockage local au Codespace, si le cluster ou l'instance Codespace est supprimé, les deux volumes (data et backup) disparaissent simultanément.
+
+Le fichier app.db (entre deux sauvegardes) : Si le fichier est supprimé 30 secondes après le dernier backup, les données générées durant ces 30 secondes sont définitivement perdues.
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+Nous n'avons pas perdu les données grâce à la stratégie de découplage et de redondance :
+
+Anticipation : Avant la suppression, le CronJob avait déjà copié l'état de la base de données vers un second volume indépendant (pra-backup).
+
+Indépendance des cycles de vie : Dans Kubernetes, bien que pra-data ait été supprimé, le volume pra-backup est resté intact car il possède son propre cycle de vie.
+
+Procédure de restauration : Le Job de restauration a permis de recréer le fichier à partir de la sauvegarde, prouvant que la donnée survit à son support d'origine tant qu'une copie existe ailleurs.
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+RPO (Recovery Point Objective) : 1 minute. * Explication : Notre CronJob se déclenche toutes les minutes. En cas de sinistre, la perte maximale de données est donc d'une minute (le temps écoulé depuis la dernière sauvegarde).
+
+RTO (Recovery Time Objective) : ~5 à 10 minutes. * Explication : C'est le temps nécessaire à un humain pour constater la panne, exécuter le kubectl apply du job de restauration, et vérifier la remise en ligne du service.
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+Cet atelier est une excellente simulation, mais il manque de résilience géographique :
+
+Colocalisation : Les données de production et les sauvegardes sont sur le même cluster et le même serveur physique (ton Codespace). Si le serveur brûle, vous perdez tout.
+
+Absence d'immuabilité : Les backups sont sur un volume réinscriptible. Un ransomware pourrait chiffrer à la fois la production ET les backups.
+
+Gestion manuelle : Le RTO dépend d'une intervention humaine (le déploiement du job de restauration). En production, on cherche souvent à automatiser cela.
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Pour une production réelle, il faudrait faire évoluer l'architecture vers une approche "3-2-1" :
+
+Offsite Backups : Envoyer les sauvegardes vers un stockage objet externe et managé (type AWS S3 ou Google Cloud Storage) avec une option de verrouillage (Object Lock) pour empêcher la suppression.
+
+Multi-AZ (Zones de Disponibilité) : Déployer le cluster sur plusieurs zones géographiques pour qu'une panne de data-center n'impacte pas le service.
+
+Monitoring & Alerting : Ajouter un outil comme Prometheus/Grafana pour être alerté instantanément si le CronJob de sauvegarde échoue.
+
+Base de données managée : Utiliser un service comme PostgreSQL managé qui gère nativement le "Point-in-Time Recovery" (PITR) au lieu de manipuler des fichiers SQLite manuellement.
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
@@ -263,13 +291,49 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
-*..**Déposez ici une copie d'écran** de votre réussite..*
+![Capture d'écran du Status](atelier1.png)
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
-Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
+Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir unpoint de restauration**.
 
-*..Décrir ici votre procédure de restauration (votre runbook)..*  
+ ![Capture d'écran du Status](atelier2.png)
+Procédure suivie :
+Identification : Listing des fichiers dans /backup via un pod de debug.
+
+kubectl -n pra exec debug-backup -- ls -lh /backup
+
+Isolation : Mise à l'échelle du déploiement Flask à 0 pour éviter les conflits d'écriture.
+
+kubectl -n pra scale deployment flask --replicas=0
+
+Configuration : Modification de pra/50-job-restore.yaml pour pointer vers le fichier spécifique : app-1777037521.db.
+
+Exécution : Lancement du Job Kubernetes.
+
+kubectl -n pra delete job sqlite-restore --ignore-not-found
+kubectl apply -f pra/50-job-restore.yaml
+
+Vérification : Relance de l'application et test via wget depuis l'intérieur du cluster.
+
+kubectl -n pra scale deployment flask --replicas=1
+
+Preuve technique de succès :
+
+Bash
+$ kubectl -n pra exec debug-backup -- wget -qO- http://flask/status
+{"backup_age_seconds":1182,"count":3,"last_backup_file":"app-1777037521.db"}
+Note : Le test confirme que l'application pointe bien sur le fichier de backup choisi manuellement.
+
+Fichiers modifiés dans ce TP :
+app/app.py : Ajout de la route /status.
+
+k8s/20-deployment.yaml : Montage du volume de backup et mise à jour de l'image (v1.1).
+
+pra/50-job-restore.yaml : Script de restauration granulaire.
+
+
+**Analyse :** Le `last_backup_file` correspond bien au point de restauration choisi, et le `count` confirme que les données ont été injectées avec succès dans le nouveau volume de production.
   
 ---------------------------------------------------
 Evaluation

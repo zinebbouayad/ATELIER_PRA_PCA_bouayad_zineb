@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: flask
-          image: pra/flask-sqlite:1.0
+          image: pra/flask-sqlite:1.1 # <--- Change 1.0 en 1.1 ici !
           imagePullPolicy: IfNotPresent
           env:
             - name: DB_PATH
@@ -29,7 +29,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: backup         # <--- AJOUT : Nom du volume de backup
+              mountPath: /backup   # <--- AJOUT : Chemin où Flask va chercher
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: pra-data
+        - name: backup         # <--- AJOUT : Déclaration du volume
+          persistentVolumeClaim:
+            claimName: pra-backup # <--- AJOUT : Nom du PVC existant
